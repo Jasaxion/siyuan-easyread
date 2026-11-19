@@ -1,0 +1,35 @@
+{
+  "name": "siyuan-easyread",
+  "author": "Jasaxion",
+  "url": "https://github.com/Jasaxion/siyuan-easyread",
+  "version": "0.1.0",
+  "minAppVersion": "3.8.9",
+  "kernels": [
+    "all"
+  ],
+  "backends": [
+    "all"
+  ],
+  "frontends": [
+    "all"
+  ],
+  "disabledInPublish": true,
+  "displayName": {
+    "default": "EasyRead",
+    "zh-CN": "EasyRead 阅读助手"
+  },
+  "description": {
+    "default": "Import PDFs and notes; pull reading notes, highlights and bilingual text through the SiYuan kernel.",
+    "zh-CN": "通过思源内核导入 PDF、文档，并同步 EasyRead 笔记、划线和双语正文。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh-CN": "README.md"
+  },
+  "keywords": [
+    "EasyRead",
+    "PDF",
+    "翻译",
+    "笔记同步"
+  ]
+}
