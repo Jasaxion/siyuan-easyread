@@ -9,7 +9,7 @@
 - **文章绑定**：搜索 EasyRead 标题/作者或直接填写文章 ID，将一篇思源文档关联到一篇文章。导入时可选择完成后绑定；不会覆盖已有绑定。
 - **选择性同步**：分别选择整篇/段落笔记与问题、划线摘录与颜色、双语正文；先预览 Markdown，再确认同步。每条内容带回到 EasyRead 原句的链接。
 - **安全快照**：同步方向为 **EasyRead → 思源**。内容未变时不重复创建，内容改变时新增子文档快照。原文、历史快照和你对快照的编辑都不会被覆盖；不自动删除旧快照、不回写 EasyRead。
-- 顶栏 EasyRead 图标提供当前文档操作、导入任务和连接设置。任务持久保存；`done` 只表示入库，**不表示翻译完成**。
+- 顶栏 EasyRead 图标提供当前文档操作、导入任务和连接设置。任务持久保存；`done` 只表示曾经入库，**不表示翻译完成或文章仍存在**。每条历史提供「移除记录」，离线或旧服务不可达时也能清理。
 
 ## 安装与配置
 
@@ -33,6 +33,13 @@
 - 双语同步使用 `view=effective`，包含 EasyRead 中已保存的译文修订。`en`/`zh` 表示源语言/目标语言，不限定英文和中文。未完成译文的段落保留现有原文，空结构化正文会拒绝同步。
 - 正文图像本身不下载到思源，保留图注、图中文字和原文位置链接。笔记中的相对图片路径、手写画布、贴纸及 AI 对话记录目前不属于完整资源同步范围。
 - 当前 UI 主要为中文；已验证桌面浏览器前端及 macOS 内核。其他平台使用同一内核 API，但尚未进行真机验收。
+
+## 在 EasyRead 删除文章后
+
+- **不联动删除思源内容**：源文档、已经同步的快照和现有绑定都保留，插件不会自动解绑或重新导入文章。继续同步时会明确提示文章不存在；你可以在绑定面板手动「解除绑定」或选择另一篇文章。
+- **导入记录是历史，不是文献列表**：EasyRead 的文章删除与任务记录独立；刷新任务会检查文章是否还在当前文献库。远端任务本身不存在时也会单独提示，不会混同为 API 未开启。
+- 点击任务右侧 **「移除记录」** 并确认，只移除插件私有 `tasks.json` 中对应服务的这条历史，不删除/解绑任何文档，不删除 EasyRead 的任务记录，也不取消仍在运行的导入或翻译。移除后不再跟踪该任务或执行其尚未完成的自动绑定；已有绑定保持不变。
+- 网络中断、授权失败、API 被关闭时不会擅自判定文章已删除。移除记录不依赖 EasyRead 在线。
 
 ## 数据与恢复
 
@@ -77,4 +84,4 @@ npm run package   # TypeScript、关键测试、构建和打包
 
 ## English summary
 
-A SiYuan 3.8.9+ kernel plugin for importing PDF attachments and private Markdown documents into EasyRead, binding articles, and pulling selected notes, highlights and bilingual text. Requests and document writes run in `kernel.js`; the UI only calls RPC. Document import requires the companion EasyRead branch with `import_html` support. Sync creates append-only child snapshots, deduplicates unchanged content and never overwrites the source or previous snapshots. Translation is opt-in. Build with `npm ci && npm run package`; install the contents of `package.zip` under `data/plugins/siyuan-easyread/`. Settings contain a private—but not encrypted—access code and may sync with the SiYuan workspace.
+A SiYuan 3.8.9+ kernel plugin for importing PDF attachments and private Markdown documents into EasyRead, binding articles, and pulling selected notes, highlights and bilingual text. Requests and document writes run in `kernel.js`; the UI only calls RPC. Document import requires the companion EasyRead branch with `import_html` support. Sync creates append-only child snapshots, deduplicates unchanged content and never overwrites the source or previous snapshots. Translation is opt-in. Build with `npm ci && npm run package`; install the contents of `package.zip` under `data/plugins/siyuan-easyread/`. Settings contain a private—but not encrypted—access code and may sync with the SiYuan workspace. Deleting an EasyRead article preserves SiYuan documents, snapshots and existing bindings. Version 0.1.1 adds per-task local history removal (also available offline) and distinct missing-article/task messages. Removing history never deletes remote data or cancels running work; it stops tracking and pending auto-binding only.

@@ -5,6 +5,10 @@ export class KernelError extends Error {
     constructor(message: string, readonly details: any) { super(message); }
 }
 
+export class RemoteError extends Error {
+    constructor(message: string, readonly status: number, readonly code: string) { super(message); }
+}
+
 export class Transport {
     constructor(readonly host: ISiyuan, readonly settings: Settings) {}
 
@@ -54,7 +58,15 @@ export class Transport {
                 404: "接口不存在：请启用开放 API，并升级到支持 HTML 导入的 EasyRead 分支",
                 413: "内容超过服务上传限制", 429: "请求过多或导入队列已满", 409: "文献库正在切换或不可用",
             };
-            throw new Error(`EasyRead HTTP ${forwarded.status}：${hints[forwarded.status] || "请求被拒绝，请检查服务日志"}`);
+            const code = typeof result?.error?.code === "string" ? result.error.code : "";
+            let hint = hints[forwarded.status] || "请求被拒绝，请检查服务日志";
+            if (forwarded.status === 404) {
+                if (code === "disabled") hint = "开放 API 未启用，请检查运行中 EasyRead 服务的配置并重启";
+                else if (code === "not_found" && /^\/documents\/[a-zA-Z0-9_-]+(?:[/?]|$)/.test(path)) {
+                    hint = "当前 EasyRead 文献库中找不到这篇文章，可能已删除或切换了文献库。思源原文和快照保留，可解除或更换绑定";
+                } else if (code === "not_found" && path.startsWith("/tasks/")) hint = "远端导入任务记录已不存在，可以移除本地记录";
+            }
+            throw new RemoteError(`EasyRead HTTP ${forwarded.status}：${hint}`, forwarded.status, code);
         }
         if (!result || typeof result !== "object") throw new Error("EasyRead 返回了无效 JSON，请检查服务地址。");
         return result;

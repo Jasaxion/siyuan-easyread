@@ -2,7 +2,7 @@
   "name": "siyuan-easyread",
   "author": "Jasaxion",
   "url": "https://github.com/Jasaxion/siyuan-easyread",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "3.8.9",
   "kernels": [
     "all"

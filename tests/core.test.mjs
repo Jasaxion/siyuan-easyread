@@ -109,6 +109,109 @@ test('uncertain snapshot keeps recovery journal; abandonment only clears that jo
   assert.equal(writes.length, 2);
 });
 
+function taskService(records, responder = async () => { throw new Error('offline'); }) {
+  const copy = value => JSON.parse(JSON.stringify(value));
+  const files = new Map([['tasks.json', copy(records)], ['settings.json', { baseUrl: 'https://current.test', accessCode: 'private-code' }]]);
+  const calls = [];
+  const host = {
+    storage: { list: async () => [...files.keys()].map(name => ({ name })), get: async name => ({ json: async () => copy(files.get(name)) }), put: async (name, value) => files.set(name, JSON.parse(value)) },
+    client: { fetch: async (path, init) => {
+      assert.equal(path, '/api/network/forwardProxy', 'task operations must not mutate documents');
+      const proxy = JSON.parse(init.body);
+      assert.equal(proxy.method, 'GET', 'no remote writes');
+      const endpoint = new URL(proxy.url).pathname;
+      calls.push(endpoint);
+      const reply = await responder(endpoint);
+      return { ok: true, json: async () => ({ code: 0, data: { status: reply.status || 200, body: JSON.stringify(reply.data) } }) };
+    } },
+  };
+  return { service: new Service(host), files, calls };
+}
+const taskId = 'c'.repeat(32);
+const record = (extra = {}) => ({ taskId, baseUrl: 'https://current.test', created: '2026-01-01', docId: id, bind: true, state: 'queued', ...extra });
+
+test('remove history offline by server plus task ID; preserve settings, bindings and other records', async () => {
+  const records = [record(), record({ baseUrl: 'https://old.test' }), record({ taskId: 'd'.repeat(32), state: 'done' })];
+  const { service, files, calls } = taskService(records);
+  files.set('settings.json', { baseUrl: '', accessCode: 'preserve-me' });
+  assert.deepEqual(await service.removeTask({ taskId, baseUrl: 'https://old.test/' }), { removed: 1 });
+  assert.deepEqual(files.get('tasks.json'), [records[0], records[2]]);
+  assert.equal(files.get('settings.json').accessCode, 'preserve-me');
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await service.removeTask({ taskId, baseUrl: 'https://old.test' }), { removed: 0 });
+  await assert.rejects(service.removeTask({ taskId: '../bad', baseUrl: 'https://current.test' }));
+  assert.equal(files.get('tasks.json').length, 2);
+});
+
+test('deleted remote article retains history and skips auto-binding without deleting SiYuan content', async () => {
+  const { service, files, calls } = taskService([record()], async path => path.includes('/tasks/')
+    ? { data: { state: 'done', document_id: article } }
+    : { status: 404, data: { error: { code: 'not_found', message: 'Document not found' } } });
+  const result = await service.task(taskId, 'https://current.test');
+  assert.equal(result.state, 'done');
+  assert.equal(result.document_missing, true);
+  assert.equal(files.get('tasks.json')[0].documentId, article);
+  assert.equal(files.get('tasks.json').length, 1);
+  assert.equal(calls.length, 2);
+});
+
+test('missing remote task can be removed without assuming the article was deleted', async () => {
+  const { service, files } = taskService([record()], async () => ({ status: 404, data: { error: { code: 'not_found' } } }));
+  const result = await service.task(taskId);
+  assert.equal(result.state, 'missing');
+  assert.equal(result.document_missing, undefined);
+  assert.equal(files.get('tasks.json').length, 1);
+  await service.removeTask({ taskId, baseUrl: 'https://current.test' });
+  assert.deepEqual(files.get('tasks.json'), []);
+});
+
+test('API disabled, auth errors and generic 404 are not treated as deleted articles', async () => {
+  for (const [status, code] of [[404, 'disabled'], [401, 'unauthorized'], [502, 'not_found'], [404, '']]) {
+    const original = record();
+    const { service, files } = taskService([original], async path => path.includes('/tasks/')
+      ? { data: { state: 'done', document_id: article } }
+      : { status, data: { error: { code, message: 'do not reflect private-code' } } });
+    await assert.rejects(service.task(taskId), error => error.status === status && error.code === code && !error.message.includes('private-code'));
+    assert.deepEqual(files.get('tasks.json'), [original]);
+  }
+});
+
+test('removal during a slow task request succeeds immediately and late results cannot rebind or resurrect it', async () => {
+  let release, started;
+  const pending = new Promise(resolve => { release = resolve; });
+  const requested = new Promise(resolve => { started = resolve; });
+  const { service, files } = taskService([record()], async path => {
+    if (path.includes('/tasks/')) { started(); await pending; return { data: { state: 'done', document_id: article } }; }
+    return { data: { id: article } };
+  });
+  const refreshing = service.task(taskId);
+  await requested;
+  assert.deepEqual(await service.removeTask({ taskId, baseUrl: 'https://current.test' }), { removed: 1 });
+  release();
+  assert.equal((await refreshing).removed, true);
+  assert.deepEqual(files.get('tasks.json'), []);
+});
+
+test('existing remote article still auto-binds; switched settings reject a stale task request', async () => {
+  const { service, files, calls } = taskService([record()], async path => ({ data: path.includes('/tasks/') ? { state: 'done', document_id: article } : { id: article } }));
+  await assert.rejects(service.task(taskId, 'https://old.test'), /设置已变化/);
+  assert.equal(calls.length, 0);
+  service.binding = async () => null;
+  let binding;
+  service.setBinding = async (docId, value) => { assert.equal(docId, id); binding = value; };
+  assert.equal((await service.task(taskId)).document_missing, false);
+  assert.equal(binding.documentId, article);
+  assert.equal(files.get('tasks.json')[0].bind, false);
+});
+
+test('missing article and disabled API produce different actionable messages', async () => {
+  const { service } = taskService([], async path => ({ status: 404, data: { error: { code: path.endsWith('/info') ? 'disabled' : 'not_found' } } }));
+  const transport = await service.transport();
+  await assert.rejects(transport.remote('/info'), /开放 API 未启用/);
+  await assert.rejects(transport.remote(`/documents/${article}`), /可能已删除/);
+  await assert.rejects(transport.remote(`/tasks/${taskId}`), /远端导入任务记录已不存在/);
+});
+
 test('frontend contains no HTTP requests; kernel uses only SiYuan client transport', async () => {
   for (const file of ['src/index.ts', 'src/ui.ts']) assert.doesNotMatch(await readFile(file, 'utf8'), /\bfetch\s*\(|XMLHttpRequest|forwardProxy/);
 });

@@ -22,7 +22,7 @@ export class UI {
         } catch (error) {
             const detail = (error as { data?: unknown })?.data;
             if (typeof detail === "string") {
-                const message = detail.match(/promise rejected: (?:Error|KernelError): ([\s\S]*)$/)?.[1];
+                const message = detail.match(/promise rejected: (?:Error|KernelError|RemoteError): ([\s\S]*)$/)?.[1];
                 if (message) throw new Error(message);
             }
             throw error;
@@ -182,7 +182,7 @@ export class UI {
         const cancelTimer = () => {
             if (timer !== undefined) { clearTimeout(timer); this.timers.delete(timer); timer = undefined; }
         };
-        const { root, alive } = this.dialog("EasyRead · 导入任务", `<p>done 仅表示入库。准备 / 翻译的状态请查看 processing 或在 EasyRead 中查看；不会自动重发失败任务。</p><div class="easyread-tasks"></div><button class="b3-button b3-button--outline" data-action="refresh">刷新状态</button>`, "700px", cancelTimer);
+        const { root, alive } = this.dialog("EasyRead · 导入任务", `<p>这里是导入历史，不是 EasyRead 文献列表。删除远端文章不会删除思源原文、快照或历史记录。done 仅表示曾经入库，不代表翻译完成。</p><p class="easyread-muted">“移除记录”只清理本地历史，不删除文章、不解除已有绑定，也不取消远端任务；移除后不再跟踪或自动绑定该任务。</p><div class="easyread-tasks"></div><button class="b3-button b3-button--outline" data-action="refresh">刷新状态</button>`, "700px", cancelTimer);
         let refreshing = false;
         const refresh = async () => {
             if (refreshing || !alive()) return;
@@ -194,27 +194,60 @@ export class UI {
                 const list = root.querySelector(".easyread-tasks")!;
                 list.replaceChildren();
                 if (!records.length) list.textContent = "暂无插件提交的导入任务。";
-                let active = false;
-                for (const record of records) {
-                    if (!alive()) return;
+                const removeRows = (record: ImportRecord) => {
+                    for (const row of list.querySelectorAll<HTMLElement>(".easyread-task")) {
+                        if (row.dataset.taskId === record.taskId && row.dataset.baseUrl === record.baseUrl) row.remove();
+                    }
+                    if (!list.querySelector(".easyread-task")) { list.textContent = "暂无插件提交的导入任务。"; cancelTimer(); }
+                };
+                // Render every removal button before any remote request, including for unreachable old servers.
+                const rows = records.map(record => {
                     const row = document.createElement("div"); row.className = "easyread-task";
+                    row.dataset.taskId = record.taskId; row.dataset.baseUrl = record.baseUrl;
+                    const text = document.createElement("p");
+                    const actions = document.createElement("div"); actions.className = "easyread-actions";
+                    const link = document.createElement("a"); link.textContent = "打开文章";
+                    link.target = "_blank"; link.rel = "noopener noreferrer";
+                    const remove = document.createElement("button");
+                    remove.className = "b3-button b3-button--outline"; remove.textContent = "移除记录";
+                    remove.addEventListener("click", () => {
+                        confirm("移除导入记录", `仅移除任务 ${htmlEscape(record.taskId)} 的本地记录，不删除思源文档或 EasyRead 文章，不解除已有绑定。远端任务若仍在运行，也不会被取消；移除后不再跟踪或自动绑定。继续？`, () => { void this.run(async () => {
+                            if (!alive()) return;
+                            remove.disabled = true;
+                            try {
+                                await this.call("removeTask", { taskId: record.taskId, baseUrl: record.baseUrl });
+                                removeRows(record);
+                            } finally { remove.disabled = false; }
+                        }); });
+                    });
+                    const render = (task: any, error = "") => {
+                        const missing = task.document_missing === true ? "\n远端文章已不存在（可能已删除或切换文献库）；思源原文和快照保留，绑定可手动解除或更换。" : "";
+                        text.textContent = `${record.taskId}\n${record.baseUrl}\n${task.state}${missing}${task.processing ? " · processing: " + JSON.stringify(task.processing) : ""}${error ? " · " + error : ""}${task.error ? " · " + JSON.stringify(task.error) : ""}`;
+                        const id = task.document_id || record.documentId;
+                        link.hidden = !id || task.document_missing === true;
+                        if (!link.hidden) link.href = readingURL(record.baseUrl, id);
+                        else link.removeAttribute("href");
+                    };
+                    render(record);
+                    actions.append(link, remove); row.append(text, actions); list.append(row);
+                    return { record, row, render };
+                });
+                let active = false;
+                for (const { record, row, render } of rows) {
+                    if (!alive()) return;
+                    if (!row.isConnected) continue;
                     let task: any = record;
                     let error = "";
                     if (record.baseUrl === settings.baseUrl) {
-                        try { task = await this.call("task", record.taskId); } catch (e) { error = String((e as Error).message); }
-                    } else error = "属于另一服务，请切换设置后查看。";
-                    const text = document.createElement("p");
-                    text.textContent = `${record.taskId}\n${task.state}${task.processing ? " · processing: " + JSON.stringify(task.processing) : ""}${error ? " · " + error : ""}${task.error ? " · " + JSON.stringify(task.error) : ""}`;
-                    row.append(text);
-                    const id = task.document_id || record.documentId;
-                    if (id) {
-                        const link = document.createElement("a"); link.textContent = "打开文章";
-                        link.href = readingURL(record.baseUrl, id); link.target = "_blank"; link.rel = "noopener noreferrer"; row.append(link);
-                    }
-                    list.append(row);
+                        try { task = await this.call("task", record.taskId, record.baseUrl); } catch (e) { error = String((e as Error).message); }
+                    } else error = "属于另一服务，可直接移除记录；查看状态需要切换设置。";
+                    if (!alive()) return;
+                    if (!row.isConnected) continue;
+                    if (task.removed) { removeRows(record); continue; }
+                    render(task, error);
                     if (!error && ["queued", "running"].includes(task.state)) active = true;
                 }
-                if (active && alive()) {
+                if (active && alive() && list.querySelector(".easyread-task")) {
                     timer = setTimeout(() => { cancelTimer(); void this.run(refresh); }, 2500);
                     this.timers.add(timer);
                 }

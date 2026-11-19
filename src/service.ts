@@ -1,5 +1,5 @@
 import type { ISiyuan } from "siyuan/kernel";
-import { Transport } from "./transport";
+import { RemoteError, Transport } from "./transport";
 import { BINDING_ATTR, DEFAULT_OPTIONS, articleID, assetPath, baseURL, docID, htmlEscape, syncOptions, taskID, type Binding, type ImportRecord, type Settings } from "./shared";
 import { previewSnapshot, saveSnapshot } from "./sync";
 
@@ -160,18 +160,49 @@ export class Service {
         });
     }
     async tasks() { return this.read<ImportRecord[]>("tasks.json", []); }
-    async task(id: string) {
-        const tid = taskID(id);
+    async removeTask(input: { taskId: string; baseUrl: string }) {
+        const tid = taskID(input.taskId);
+        const base = baseURL(input.baseUrl);
         return this.locked("tasks", async () => {
-            const t = await this.transport();
             const tasks = await this.tasks();
-            const record = tasks.find(task => task.taskId === tid && task.baseUrl === baseURL(t.settings.baseUrl));
-            if (!record) throw new Error("当前服务没有这个插件导入记录。");
-            const task = await t.remote(`/tasks/${tid}`);
+            const kept = tasks.filter(task => task.taskId !== tid || task.baseUrl !== base);
+            if (kept.length !== tasks.length) await this.write("tasks.json", kept);
+            return { removed: tasks.length - kept.length };
+        });
+    }
+    async task(id: string, expectedBase?: string) {
+        const tid = taskID(id);
+        const t = await this.transport();
+        const base = baseURL(t.settings.baseUrl);
+        if (expectedBase !== undefined && baseURL(expectedBase) !== base) throw new Error("服务设置已变化，请刷新任务列表。");
+        const matches = (record: ImportRecord) => record.taskId === tid && record.baseUrl === base;
+        if (!(await this.tasks()).some(matches)) throw new Error("当前服务没有这个插件导入记录。");
+        // Network I/O must not lock the local history: removing a row works even while offline.
+        let task: any;
+        try { task = await t.remote(`/tasks/${tid}`); }
+        catch (error) {
+            if (!(error instanceof RemoteError) || error.status !== 404 || error.code !== "not_found") throw error;
+            return { id: tid, state: "missing", error: { code: "not_found", message: "远端任务记录已不存在，可以移除本地记录。" } };
+        }
+        if (task.document_id) {
+            task.document_id = articleID(task.document_id);
+            try {
+                await t.remote(`/documents/${task.document_id}`);
+                task.document_missing = false;
+            } catch (error) {
+                if (!(error instanceof RemoteError) || error.status !== 404 || error.code !== "not_found") throw error;
+                task.document_missing = true;
+            }
+        }
+        return this.locked("tasks", async () => {
+            const tasks = await this.tasks();
+            const record = tasks.find(matches);
+            // A slow response must neither resurrect removed history nor perform late auto-binding.
+            if (!record) return { ...task, removed: true };
             record.state = task.state;
-            if (task.document_id) record.documentId = articleID(task.document_id);
+            if (task.document_id) record.documentId = task.document_id;
             if (task.error) record.error = String(task.error.code || "import_failed");
-            if (task.state === "done" && record.bind && record.docId && record.documentId) {
+            if (task.state === "done" && task.document_missing === false && record.bind && record.docId && record.documentId) {
                 await this.locked(record.docId, async () => {
                     const existing = await this.binding(record.docId!, t);
                     if (!existing) await this.setBinding(record.docId!, { documentId: record.documentId!, baseUrl: record.baseUrl, options: { ...DEFAULT_OPTIONS } }, t);
